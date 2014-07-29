@@ -1,0 +1,86 @@
+#!/usr/bin/env python
+
+import os
+from subprocess import check_output
+import argparse
+
+import docker
+
+
+DOCKER_SOCKET = os.environ.get('DOCKER_HOST')
+
+if not DOCKER_SOCKET:
+    raise Exception("You forgot to set DOCKER_HOST env variable")
+
+client = docker.Client(base_url=DOCKER_SOCKET,  # 'tcp://192.168.59.103:2375', #'unix://var/run/docker.sock',
+                       version='1.12',
+                       timeout=10)
+
+hostname = check_output(["hostname"]).replace("\n", "")
+
+
+def get_current_container():
+    """
+    Gets current container by inspecting hostname on docker (contains the container ID)
+    """
+    containers = [container for container in client.containers(trunc=False) if container['Id'].startswith(hostname)]
+
+    if len(containers) != 1:
+        raise Exception('Container not found')
+    return containers[0]
+
+
+def get_port_mapping(type='tcp'):
+    """
+    Gets mappings for ports on docker container
+    """
+    container = get_current_container()
+
+    val_or_empty = lambda m_dict, m_key: str(m_dict[m_key]) if m_dict.has_key(m_key) else None
+
+    port_mapping = {
+        port_map['PrivatePort']: filter(lambda x: x is not None,
+                                        (val_or_empty(port_map, 'IP'), val_or_empty(port_map, 'PublicPort')))
+        for port_map in filter(lambda x: x['Type'] == type, container['Ports'])
+    }
+    return port_mapping
+
+
+def public_ports_tags(*args):
+    """
+    Gets -tag formatted port mapping for Serf
+    """
+    port_mapping = get_port_mapping()
+    print " ".join(
+        ["-tag PORT_%d=%s:%s" % (port, pmap[0], pmap[1]) for port, pmap in port_mapping.iteritems() if len(pmap)])
+
+
+def public_binding_by_port(port):
+    """
+    Gets a mapping for the specified port
+    """
+    port = int(port)
+    port_mapping = get_port_mapping()
+    if port in port_mapping and port_mapping[port]:
+        mapping = port_mapping[port]
+        print "%s:%s" % (mapping[0], mapping[1])
+
+    return None
+
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(description='Access docker daemon to get network settings', prog='DockerAPI')
+    subparsers = parser.add_subparsers(help='command to execute')
+
+    # create the parser for the 'public_ports_tags' command
+    parser_public_ports_tags = subparsers.add_parser('public_ports_tags', help='Public ports info')
+    parser_public_ports_tags.set_defaults(func=public_ports_tags)
+
+    # create the parser for the 'public_binding_by_port' command
+    parser_public_binding_by_port = subparsers.add_parser('public_binding_by_port', help='Public port binding')
+    parser_public_binding_by_port.add_argument('port', type=int, help='port number to get info for')
+    parser_public_binding_by_port.set_defaults(func=public_binding_by_port)
+
+    args = parser.parse_args()
+    args.func(*args._get_args(), **{item[0]: item[1] for item in args._get_kwargs() if item[0] != 'func'})
